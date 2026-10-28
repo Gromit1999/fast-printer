@@ -1,0 +1,4 @@
+pymupdf
+pywin32
+pillow
+tkinterdnd2

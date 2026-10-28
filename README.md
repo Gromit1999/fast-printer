@@ -6,7 +6,7 @@ Print shipping labels from a PDF in two clicks. For Windows and thermal label pr
 
 ## Download
 
-**[Download Fast Printer.exe](https://github.com/Gromit1999/fast-printer/releases/latest)**, then double-click it. Nothing to install.
+**[Download Fast Printer.exe](https://github.com/Gromit1999/fast-printer/releases/latest/download/Fast-Printer.exe)**, then double-click it. Nothing to install.
 
 If Windows says "Windows protected your PC", click **More info**, then **Run anyway**.
 

@@ -27,6 +27,8 @@ If Windows says "Windows protected your PC", click **More info**, then **Run any
 3. Open **System Settings**, go to **Privacy & Security**, scroll down and click **Open Anyway** next to Fast Printer.
 4. Open the app again and click **Open Anyway**. You only need to do this once.
 
+**Updates:** when a new version is out, the Mac app asks if you want it when you open it. Click **Yes** and it updates itself and reopens. This works when the app is in your Applications folder.
+
 ## How to use
 
 1. Drag a PDF onto the window, or click to find one.
@@ -52,6 +54,10 @@ Your printer just needs to be set up on your computer once, using the maker's dr
 
 Zebra printers and normal office printers won't work.
 
+## Something not printing right?
+
+Click **Log** at the top of the app. It opens the folder with `log.txt` selected. Send that file to whoever is helping you. It records every print: the label size, settings, how much data was sent and what the printer said back.
+
 ## For developers
 
 Run from source with Python 3.10 or newer:
@@ -62,7 +68,7 @@ python "Fast Printer.py"
 python "Fast Printer.py" --selftest
 ```
 
-Pushing a tag like `v1.2.0` builds the Windows and Mac downloads on GitHub and publishes them as a release (see `.github/workflows/build.yml`).
+To release: bump `APP_VERSION` in `Fast Printer.py`, then push a matching tag (`v1.2.0` for `APP_VERSION = "1.2.0"`). The build fails if they don't match, because the Mac app compares them to decide whether to update. Pushing the tag builds the Windows and Mac downloads on GitHub and publishes them as a release (see `.github/workflows/build.yml`).
 
 ## License
 

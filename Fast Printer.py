@@ -2,10 +2,17 @@
 label printer, so the settings come from this app, not the printer driver. Runs on Windows and macOS."""
 import ctypes
 import json
+import logging
 import os
+import platform
+import re
 import subprocess
 import sys
+import tempfile
+import threading
+import time
 import tkinter as tk
+from logging.handlers import RotatingFileHandler
 from tkinter import filedialog, messagebox, ttk
 
 import pymupdf
@@ -17,14 +24,18 @@ if WINDOWS:
     import win32print
 
 APP = "Fast Printer"
+APP_VERSION = "1.2.0"  # must match the release tag (v1.2.0); the build checks this
+REPO = "Gromit1999/fast-printer"
 PLACEHOLDER = "Select printer"
 DOTS_PER_MM = 8  # 203 dpi
 SIZES = {"100 x 150 mm": (100, 150), "30 x 60 mm": (60, 30)}  # built-in defaults: width, height in mm
 MIN_MM, MAX_MM = 10, 300  # sanity bounds for custom sizes
 GAP_MM = 3  # labels are always gapped, 3 mm gap, no offset
 DEFAULTS = {"speed": 1, "darkness": 15, "copies": 1}
-SETTINGS_FILE = os.path.join(os.environ.get("APPDATA") or os.path.expanduser("~/Library/Application Support"),
-                             "FastPrinter", "settings.json")
+APP_DIR = os.path.join(os.environ.get("APPDATA") or os.path.expanduser("~/Library/Application Support"), "FastPrinter")
+SETTINGS_FILE = os.path.join(APP_DIR, "settings.json")
+LOG_FILE = os.path.join(APP_DIR, "log.txt")
+log = logging.getLogger(APP)
 
 # Palette
 BG, CARD, BORDER, TEXT, MUTED = "#f3f4f6", "#ffffff", "#d7dbe2", "#111827", "#6b7280"
@@ -117,13 +128,16 @@ def build_tspl(images, w_mm, h_mm, s):
 def print_pdf(path, dims, s, printer):
     w_mm, h_mm = dims
     with pymupdf.open(path) as doc:
+        pages = [(round(p.rect.width), round(p.rect.height)) for p in doc]
         images = [page_to_label(p, round(w_mm * DOTS_PER_MM), round(h_mm * DOTS_PER_MM)) for p in doc]
     data = build_tspl(images, w_mm, h_mm, s)
+    log.info("PRINT %r to %r: label %gx%g mm, %s, PDF pages (pt) %s, %d bytes\n%s", os.path.basename(path), printer,
+             w_mm, h_mm, s, pages, len(data), data.split(b"CLS")[0].decode().replace("\r", ""))
     if not WINDOWS:  # macOS: hand the raw TSPL to CUPS, bypassing the driver's own rendering
-        r = subprocess.run(["lp", "-d", printer, "-o", "raw", "-t", os.path.basename(path)],
-                           input=data, capture_output=True)
+        r = run(["lp", "-d", printer, "-o", "raw", "-t", os.path.basename(path)], data)
         if r.returncode:
             raise RuntimeError(r.stderr.decode(errors="replace").strip() or "The printer refused the job.")
+        threading.Thread(target=follow_job, args=(printer, r.stdout.decode(errors="replace")), daemon=True).start()
         return len(images)
     hp = win32print.OpenPrinter(printer)
     try:
@@ -134,7 +148,55 @@ def print_pdf(path, dims, s, printer):
         win32print.EndDocPrinter(hp)
     finally:
         win32print.ClosePrinter(hp)
+    log.info("Sent to Windows spooler OK")
     return len(images)
+
+
+def run(cmd, data=None):
+    """Run a command and log it with its output."""
+    r = subprocess.run(cmd, input=data, capture_output=True)
+    log.info("$ %s  -> exit %s\n%s%s", " ".join(cmd), r.returncode,
+             r.stdout.decode(errors="replace"), r.stderr.decode(errors="replace"))
+    return r
+
+
+def follow_job(printer, lp_out):
+    """Mac debugging: log how long CUPS takes to finish the job, then what the queue and CUPS say. A job that
+    leaves the queue long before the label could physically finish points at CUPS cutting the print off."""
+    m = re.search(r"request id is (\S+)", lp_out)
+    if not m:
+        return
+    job, start = m.group(1), time.time()
+    while time.time() - start < 120 and job in subprocess.run(["lpstat", "-o", printer], capture_output=True,
+                                                               text=True).stdout.split():
+        time.sleep(0.25)
+    log.info("Job %s left the queue after %.1f s", job, time.time() - start)
+    run(["lpstat", "-W", "completed", "-l", "-o", printer])
+    run(["lpstat", "-l", "-p", printer])
+    run(["lpstat", "-v", printer])
+    try:
+        with open("/var/log/cups/error_log", errors="replace") as f:
+            log.info("CUPS error_log (last 40 lines):\n%s", "".join(f.readlines()[-40:]))
+    except OSError as e:
+        log.info("CUPS error_log not readable: %s", e)
+
+
+def setup_log():
+    os.makedirs(APP_DIR, exist_ok=True)
+    h = RotatingFileHandler(LOG_FILE, maxBytes=1_000_000, backupCount=1, encoding="utf-8")
+    h.setFormatter(logging.Formatter("%(asctime)s  %(message)s"))
+    log.addHandler(h)
+    log.setLevel(logging.INFO)
+    log.info("==== %s %s on %s %s (%s), Python %s", APP, APP_VERSION, platform.system(),
+             platform.mac_ver()[0] or platform.release(), platform.machine(), platform.python_version())
+
+
+def version_tuple(v):
+    return tuple(int(x) for x in v.lstrip("v").split("."))
+
+
+def mac_asset():
+    return "Fast-Printer-Mac-Apple.zip" if platform.machine() == "arm64" else "Fast-Printer-Mac-Intel.zip"
 
 
 VIRTUAL_PRINTERS = ("microsoft print to pdf", "microsoft xps", "onenote", "fax", "send to ")  # can't take TSPL
@@ -197,7 +259,7 @@ class App:
         except Exception:
             pass
         self.root = TkinterDnD.Tk()
-        self.root.title(APP)
+        self.root.title(f"{APP} {APP_VERSION}")
         self.root.configure(bg=BG)
         self.root.resizable(False, False)
         self.icons = [ImageTk.PhotoImage(make_logo(n)) for n in (64, 32, 16)]
@@ -230,6 +292,9 @@ class App:
 
         self.load_into_form()
         self.root.protocol("WM_DELETE_WINDOW", self.close)
+        log.info("Printers: %s", self.printers)
+        if not WINDOWS and getattr(sys, "frozen", False):  # only the built Mac app updates itself
+            threading.Thread(target=self.check_update, daemon=True).start()
         try:
             style_title_bar(self.root)
         except Exception:
@@ -264,11 +329,19 @@ class App:
         self.dot_text = tk.Label(status, bg=HEADER, fg="#9ca3af", font=(FONT, 8))
         self.dot_text.pack(side="left", padx=(3, 0))
         self.paint_printer_status()
-        link = tk.Label(bar, text="Label sizes", bg=HEADER, fg="#9ca3af", font=(FONT, 9, "underline"), cursor="hand2")
-        link.pack(side="right")
-        link.bind("<Button-1>", lambda e: self.open_sizes())
-        link.bind("<Enter>", lambda e: link.config(fg="white"))
-        link.bind("<Leave>", lambda e: link.config(fg="#9ca3af"))
+        for text, command in (("Log", self.show_log), ("Label sizes", self.open_sizes)):
+            link = tk.Label(bar, text=text, bg=HEADER, fg="#9ca3af", font=(FONT, 9, "underline"), cursor="hand2")
+            link.pack(side="right", padx=(12, 0))
+            link.bind("<Button-1>", lambda e, c=command: c())
+            link.bind("<Enter>", lambda e, l=link: l.config(fg="white"))
+            link.bind("<Leave>", lambda e, l=link: l.config(fg="#9ca3af"))
+
+    def show_log(self):
+        """Open the log's folder with the file selected, so it can be sent on."""
+        if WINDOWS:
+            subprocess.Popen(["explorer", f"/select,{LOG_FILE}"])
+        else:
+            subprocess.run(["open", "-R", LOG_FILE])
 
     def printer_picker(self, parent):
         tk.Label(parent, text="SELECT PRINTER", bg=BG, fg=MUTED, font=(FONT, 8, "bold")).pack(anchor="w", pady=(0, 6))
@@ -531,8 +604,64 @@ class App:
             total = n * s["copies"]
             self.set_status(f"Sent {total} label{'s' if total != 1 else ''} at {self.size.get()}", OK)
         except Exception as e:
+            log.exception("Print failed")
             self.set_status("Print failed", BAD)
             messagebox.showerror("Print failed", str(e))
+
+    # ---------- Mac auto-update ----------
+    def check_update(self):
+        """Background: ask GitHub for the newest release and offer it if it's newer than this one."""
+        try:
+            out = subprocess.run(["curl", "-fsSL", "--max-time", "10",
+                                  f"https://api.github.com/repos/{REPO}/releases/latest"],
+                                 capture_output=True, text=True, check=True).stdout
+            latest = json.loads(out)["tag_name"]
+            newer = version_tuple(latest) > version_tuple(APP_VERSION)
+        except Exception as e:  # offline, rate-limited, odd tag: just skip this time
+            log.info("Update check failed: %s", e)
+            return
+        log.info("Update check: running %s, latest %s", APP_VERSION, latest)
+        if newer:
+            self.root.after(0, lambda: self.offer_update(latest))
+
+    def offer_update(self, latest):
+        if not messagebox.askyesno("Update available", f"Fast Printer {latest.lstrip('v')} is available "
+                                   f"(you have {APP_VERSION}).\n\nUpdate now? It takes a few seconds."):
+            return
+        # sys.executable is .../Fast Printer.app/Contents/MacOS/Fast Printer
+        bundle = os.path.abspath(os.path.join(sys.executable, "..", "..", ".."))
+        if not bundle.endswith(".app") or not os.access(os.path.dirname(bundle), os.W_OK):
+            # e.g. still opened from Downloads (macOS runs it from a read-only copy), or no permission
+            log.info("Can't replace %s, sending user to the download page", bundle)
+            messagebox.showinfo("Update", "Fast Printer can't update itself from where it is. Move it into your "
+                                "Applications folder first, or download the new version from the page that opens.")
+            subprocess.run(["open", f"https://github.com/{REPO}/releases/latest"])
+            return
+        self.set_status("Downloading update…", MUTED)
+        threading.Thread(target=self.install_update, args=(bundle,), daemon=True).start()
+
+    def install_update(self, bundle):
+        """Download and unzip the new app; a small script swaps it in once this one has quit, then reopens it.
+        Downloaded with curl, so macOS doesn't quarantine it and there's no 'Open Anyway' step again."""
+        tmp = tempfile.mkdtemp(prefix="fastprinter-update-")
+        zip_path, new_app = os.path.join(tmp, "update.zip"), os.path.join(tmp, "Fast Printer.app")
+        try:
+            subprocess.run(["curl", "-fsSL", "--max-time", "300", "-o", zip_path,
+                            f"https://github.com/{REPO}/releases/latest/download/{mac_asset()}"],
+                           capture_output=True, check=True)
+            subprocess.run(["ditto", "-x", "-k", zip_path, tmp], capture_output=True, check=True)
+            if not os.path.isdir(new_app):
+                raise RuntimeError("the download didn't contain Fast Printer.app")
+        except Exception as e:
+            log.exception("Update download failed")
+            msg = str(e)
+            self.root.after(0, lambda: (self.set_status("Update failed", BAD),
+                                        messagebox.showerror("Update failed", msg)))
+            return
+        log.info("Update downloaded, swapping %s and relaunching", bundle)
+        swap = 'while kill -0 "$1" 2>/dev/null; do sleep 0.3; done; rm -rf "$2" && mv "$3" "$2" && open "$2"'
+        subprocess.Popen(["/bin/sh", "-c", swap, "swap", str(os.getpid()), bundle, new_app], start_new_session=True)
+        self.root.after(0, self.close)
 
     def close(self):
         try:
@@ -559,6 +688,7 @@ def selftest():
         except ValueError:
             pass
     assert build_tspl([], 50.5, 25, DEFAULTS).startswith(b"SIZE 50.5 mm,25 mm\r\n")
+    assert version_tuple("v1.10.0") > version_tuple("1.9.2") and not version_tuple("v1.2.0") > version_tuple("1.2.0")
     print("selftest ok")
 
 
@@ -568,4 +698,5 @@ if __name__ == "__main__":
     elif "--write-icon" in sys.argv:  # used by the build: icon.ico (Windows) or icon.png (Mac)
         make_logo(512).save(sys.argv[-1], sizes=[(16, 16), (24, 24), (32, 32), (48, 48), (64, 64), (128, 128), (256, 256)])
     else:
+        setup_log()
         App().root.mainloop()

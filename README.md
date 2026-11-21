@@ -1,14 +1,31 @@
 # Fast Printer
 
-Print shipping labels from a PDF in two clicks. For Windows and thermal label printers.
+Print shipping labels from a PDF in two clicks. For Windows and Mac, with thermal label printers.
 
 <!-- screenshot -->
 
 ## Download
 
-**[Download Fast Printer.exe](https://github.com/Gromit1999/fast-printer/releases/latest/download/Fast-Printer.exe)**, then double-click it. Nothing to install.
+| Computer | Download |
+|---|---|
+| Windows | **[Fast Printer.exe](https://github.com/Gromit1999/fast-printer/releases/latest/download/Fast-Printer.exe)** |
+| Mac with an Apple chip (M1 or newer) | **[Fast Printer for Mac (Apple chip)](https://github.com/Gromit1999/fast-printer/releases/latest/download/Fast-Printer-Mac-Apple.zip)** |
+| Older Mac with an Intel chip | **[Fast Printer for Mac (Intel)](https://github.com/Gromit1999/fast-printer/releases/latest/download/Fast-Printer-Mac-Intel.zip)** |
+
+Not sure which Mac you have? Click the Apple menu, then **About This Mac**. It says "Chip: Apple M..." or "Processor: Intel".
+
+### Windows
+
+Double-click the .exe. Nothing to install.
 
 If Windows says "Windows protected your PC", click **More info**, then **Run anyway**.
+
+### Mac
+
+1. Double-click the .zip to unzip it, then drag **Fast Printer** into your **Applications** folder.
+2. Open it. The first time, your Mac will say it can't check the app is safe. Click **Done** (or **OK**).
+3. Open **System Settings**, go to **Privacy & Security**, scroll down and click **Open Anyway** next to Fast Printer.
+4. Open the app again and click **Open Anyway**. You only need to do this once.
 
 ## How to use
 
@@ -18,7 +35,7 @@ If Windows says "Windows protected your PC", click **More info**, then **Run any
 
 ## What it does
 
-- **Finds your printers automatically.** Any printer set up on your PC shows in the list.
+- **Finds your printers automatically.** Any printer set up on your computer shows in the list.
 - **Built-in label sizes:** 100 x 150 mm and 60 x 30 mm. Add your own under **Label sizes**.
 - **Set speed, darkness and copies.** It remembers them for each label size.
 - **No gap setup.** The gap between labels is already set for you.
@@ -28,9 +45,24 @@ If Windows says "Windows protected your PC", click **More info**, then **Run any
 
 Thermal label printers that use TSPL, such as Munbyn, TSC, Xprinter, HPRT and iDPRT. Tested on a Munbyn ITPP130.
 
-Your printer just needs to be set up in Windows once, using the maker's driver.
+Your printer just needs to be set up on your computer once, using the maker's driver:
+
+- **Windows:** install the driver from the printer maker's website.
+- **Mac:** install the maker's Mac driver, then add the printer in **System Settings > Printers & Scanners**.
 
 Zebra printers and normal office printers won't work.
+
+## For developers
+
+Run from source with Python 3.10 or newer:
+
+```
+pip install -r requirements.txt
+python "Fast Printer.py"
+python "Fast Printer.py" --selftest
+```
+
+Pushing a tag like `v1.2.0` builds the Windows and Mac downloads on GitHub and publishes them as a release (see `.github/workflows/build.yml`).
 
 ## License
 

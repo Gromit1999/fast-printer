@@ -1,16 +1,20 @@
 """Fast Printer: drag a PDF in, pick a label size, click Print. Talks TSPL straight to the chosen
-label printer, so the settings come from this app, not the Windows driver."""
+label printer, so the settings come from this app, not the printer driver. Runs on Windows and macOS."""
 import ctypes
 import json
 import os
+import subprocess
 import sys
 import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
 
 import pymupdf
-import win32print
 from PIL import Image, ImageDraw, ImageTk
 from tkinterdnd2 import DND_FILES, TkinterDnD
+
+WINDOWS = sys.platform == "win32"
+if WINDOWS:
+    import win32print
 
 APP = "Fast Printer"
 PLACEHOLDER = "Select printer"
@@ -19,12 +23,13 @@ SIZES = {"100 x 150 mm": (100, 150), "30 x 60 mm": (60, 30)}  # built-in default
 MIN_MM, MAX_MM = 10, 300  # sanity bounds for custom sizes
 GAP_MM = 3  # labels are always gapped, 3 mm gap, no offset
 DEFAULTS = {"speed": 1, "darkness": 15, "copies": 1}
-SETTINGS_FILE = os.path.join(os.environ.get("APPDATA", "."), "FastPrinter", "settings.json")
+SETTINGS_FILE = os.path.join(os.environ.get("APPDATA") or os.path.expanduser("~/Library/Application Support"),
+                             "FastPrinter", "settings.json")
 
 # Palette
 BG, CARD, BORDER, TEXT, MUTED = "#f3f4f6", "#ffffff", "#d7dbe2", "#111827", "#6b7280"
 HEADER, ACCENT, ACCENT_DARK, OK, BAD = "#111827", "#2563eb", "#1d4ed8", "#16a34a", "#dc2626"
-FONT = "Segoe UI"
+FONT = "Segoe UI" if WINDOWS else "Helvetica Neue"
 
 
 def make_logo(px):
@@ -114,6 +119,12 @@ def print_pdf(path, dims, s, printer):
     with pymupdf.open(path) as doc:
         images = [page_to_label(p, round(w_mm * DOTS_PER_MM), round(h_mm * DOTS_PER_MM)) for p in doc]
     data = build_tspl(images, w_mm, h_mm, s)
+    if not WINDOWS:  # macOS: hand the raw TSPL to CUPS, bypassing the driver's own rendering
+        r = subprocess.run(["lp", "-d", printer, "-o", "raw", "-t", os.path.basename(path)],
+                           input=data, capture_output=True)
+        if r.returncode:
+            raise RuntimeError(r.stderr.decode(errors="replace").strip() or "The printer refused the job.")
+        return len(images)
     hp = win32print.OpenPrinter(printer)
     try:
         win32print.StartDocPrinter(hp, 1, (os.path.basename(path), None, "RAW"))
@@ -130,7 +141,13 @@ VIRTUAL_PRINTERS = ("microsoft print to pdf", "microsoft xps", "onenote", "fax",
 
 
 def list_printers():
-    """Every printer installed for this Windows user (local, USB and network), minus virtual ones."""
+    """Every printer installed for this user (local, USB and network), minus virtual ones."""
+    if not WINDOWS:
+        try:
+            out = subprocess.run(["lpstat", "-e"], capture_output=True, text=True).stdout
+        except OSError:
+            return []
+        return sorted({n.strip() for n in out.splitlines() if n.strip()}, key=str.lower)
     flags = win32print.PRINTER_ENUM_LOCAL | win32print.PRINTER_ENUM_CONNECTIONS
     try:
         names = {p[2] for p in win32print.EnumPrinters(flags)}
@@ -156,6 +173,17 @@ def style_title_bar(root):
     bgr = lambda hexc: ctypes.c_int(int(hexc[5:7] + hexc[3:5] + hexc[1:3], 16))
     for attr, val in ((20, ctypes.c_int(1)), (35, bgr(HEADER)), (36, bgr("#ffffff"))):
         ctypes.windll.dwmapi.DwmSetWindowAttribute(hwnd, attr, ctypes.byref(val), ctypes.sizeof(val))
+
+
+class MacButton(tk.Label):
+    """macOS draws tk.Button natively and ignores its colours (white text on grey), so use a clickable label."""
+
+    def __init__(self, master, command=None, **kw):
+        super().__init__(master, **kw)
+        self.bind("<Button-1>", lambda e: command())
+
+
+Button = tk.Button if WINDOWS else MacButton
 
 
 class App:
@@ -189,7 +217,7 @@ class App:
         self.size_picker(body)
         self.settings_card(body)
 
-        self.btn = tk.Button(body, text="Print", font=(FONT, 13, "bold"), bg=ACCENT, fg="white",
+        self.btn = Button(body, text="Print", font=(FONT, 13, "bold"), bg=ACCENT, fg="white",
                              activebackground=ACCENT_DARK, activeforeground="white", relief="flat",
                              bd=0, cursor="hand2", pady=11, command=self.go)
         self.btn.pack(fill="x", pady=(18, 0))
@@ -302,7 +330,7 @@ class App:
         self.size_btns = {}
         names = list(self.sizes)
         for i, name in enumerate(names):
-            b = tk.Button(self.size_row, text=name, font=(FONT, 11, "bold"), relief="flat", bd=0, cursor="hand2",
+            b = Button(self.size_row, text=name, font=(FONT, 11, "bold"), relief="flat", bd=0, cursor="hand2",
                           pady=9, highlightthickness=1, command=lambda n=name: self.pick_size(n))
             span = 2 if i == len(names) - 1 and i % 2 == 0 else 1
             b.grid(row=i // 2, column=i % 2, columnspan=span, sticky="ew",
@@ -330,7 +358,7 @@ class App:
                 tk.Label(row, text=name, bg=CARD, fg=TEXT, font=(FONT, 10, "bold")).pack(side="left")
                 tk.Label(row, text=f"  {w_mm:g} wide, {h_mm:g} tall", bg=CARD, fg=MUTED, font=(FONT, 9)).pack(side="left")
                 if len(self.sizes) > 1:
-                    tk.Button(row, text="Remove", font=(FONT, 9), fg=BAD, bg=CARD, activebackground=BG, relief="flat",
+                    Button(row, text="Remove", font=(FONT, 9), fg=BAD, bg=CARD, activebackground=BG, relief="flat",
                               bd=0, cursor="hand2", command=lambda n=name: remove(n)).pack(side="right")
 
         def remove(name):
@@ -377,7 +405,7 @@ class App:
             h_var.set("")
             redraw()
 
-        tk.Button(form, text="Add size", font=(FONT, 10, "bold"), bg=ACCENT, fg="white", activebackground=ACCENT_DARK,
+        Button(form, text="Add size", font=(FONT, 10, "bold"), bg=ACCENT, fg="white", activebackground=ACCENT_DARK,
                   activeforeground="white", relief="flat", bd=0, cursor="hand2", padx=14, pady=5,
                   command=add).grid(row=0, column=2, sticky="sw")
         tk.Label(win, text="Width is across the printer, height is along the feed.", bg=BG, fg=MUTED,
@@ -537,7 +565,7 @@ def selftest():
 if __name__ == "__main__":
     if "--selftest" in sys.argv:
         selftest()
-    elif "--write-icon" in sys.argv:  # used when building the .exe
-        make_logo(256).save(sys.argv[-1], sizes=[(16, 16), (24, 24), (32, 32), (48, 48), (64, 64), (128, 128), (256, 256)])
+    elif "--write-icon" in sys.argv:  # used by the build: icon.ico (Windows) or icon.png (Mac)
+        make_logo(512).save(sys.argv[-1], sizes=[(16, 16), (24, 24), (32, 32), (48, 48), (64, 64), (128, 128), (256, 256)])
     else:
         App().root.mainloop()

@@ -24,7 +24,7 @@ if WINDOWS:
     import win32print
 
 APP = "Fast Printer"
-APP_VERSION = "1.2.0"  # must match the release tag (v1.2.0); the build checks this
+APP_VERSION = "1.2.1"  # must match the release tag (v1.2.1); the build checks this
 REPO = "Gromit1999/fast-printer"
 PLACEHOLDER = "Select printer"
 DOTS_PER_MM = 8  # 203 dpi
@@ -111,7 +111,15 @@ def page_to_label(page, w_dots, h_dots):
     canvas = Image.new("L", (w_dots, h_dots), 255)
     canvas.paste(img, ((w_dots - img.width) // 2, (h_dots - img.height) // 2))
     # Hard threshold, no dithering: keeps barcodes and text crisp.
-    return canvas.point(lambda v: 255 if v > 160 else 0).convert("1")
+    label = canvas.point(lambda v: 255 if v > 160 else 0).convert("1")
+    # For blank labels: 0% black means the app made an empty picture (the PDF, or too faint: darkest over 160);
+    # anything above 0% means there was something to print and it got lost on the Mac or in the printer.
+    log.info("Page %d: %.2f%% black, darkest %d (0=black, 255=white), black area %s of %s; PDF has %d text chars, "
+             "%d images, %d drawings, rotation %d, crop %s, media %s", page.number + 1,
+             100 * label.histogram()[0] / (w_dots * h_dots), canvas.getextrema()[0],
+             label.point(lambda v: 255 - v).getbbox(), label.size, len(page.get_text()), len(page.get_images()),
+             len(page.get_drawings()), page.rotation, tuple(page.cropbox), tuple(page.mediabox))
+    return label
 
 
 def build_tspl(images, w_mm, h_mm, s):
@@ -167,6 +175,7 @@ def follow_job(printer, lp_out):
     if not m:
         return
     job, start = m.group(1), time.time()
+    run(["lpstat", "-l", "-p", printer])  # state while printing: paused, offline, filter errors
     while time.time() - start < 120 and job in subprocess.run(["lpstat", "-o", printer], capture_output=True,
                                                                text=True).stdout.split():
         time.sleep(0.25)
@@ -174,6 +183,7 @@ def follow_job(printer, lp_out):
     run(["lpstat", "-W", "completed", "-l", "-o", printer])
     run(["lpstat", "-l", "-p", printer])
     run(["lpstat", "-v", printer])
+    run(["lpoptions", "-p", printer])  # driver name and saved options
     try:
         with open("/var/log/cups/error_log", errors="replace") as f:
             log.info("CUPS error_log (last 40 lines):\n%s", "".join(f.readlines()[-40:]))
@@ -688,6 +698,12 @@ def selftest():
         except ValueError:
             pass
     assert build_tspl([], 50.5, 25, DEFAULTS).startswith(b"SIZE 50.5 mm,25 mm\r\n")
+    for ink, black in ((None, False), ((0, 0, 0), True)):
+        with pymupdf.open() as doc:
+            page = doc.new_page(width=288, height=432)
+            if ink:
+                page.draw_rect(page.rect, fill=ink)
+            assert (0 in page_to_label(page, 800, 1200).tobytes()) is black
     assert version_tuple("v1.10.0") > version_tuple("1.9.2") and not version_tuple("v1.2.0") > version_tuple("1.2.0")
     print("selftest ok")
 

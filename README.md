@@ -56,7 +56,7 @@ Zebra printers and normal office printers won't work.
 
 ## Something not printing right?
 
-Click **Log** at the top of the app. It opens the folder with `log.txt` selected. Send that file to whoever is helping you. It records every print: the label size, settings, how much data was sent and what the printer said back.
+Click **Dump logs** at the top of the app, save the file, and send it to whoever is helping you. It records every print: the PDF's file name, label size, settings, how much data was sent and what the printer said back, plus your printer setup. To read the log yourself, click **View logs**.
 
 ## For developers
 

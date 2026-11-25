@@ -24,7 +24,7 @@ if WINDOWS:
     import win32print
 
 APP = "Fast Printer"
-APP_VERSION = "1.2.1"  # must match the release tag (v1.2.1); the build checks this
+APP_VERSION = "1.2.2"  # must match the release tag (v1.2.2); the build checks this
 REPO = "Gromit1999/fast-printer"
 PLACEHOLDER = "Select printer"
 DOTS_PER_MM = 8  # 203 dpi
@@ -201,6 +201,27 @@ def setup_log():
              platform.mac_ver()[0] or platform.release(), platform.machine(), platform.python_version())
 
 
+def build_dump(printer):
+    """Everything useful for debugging as one text: printer state right now, settings, then the logs oldest first."""
+    out = [f"{APP} {APP_VERSION} on {platform.platform()}\nSelected printer: {printer}\nPrinters: {list_printers()}\n"]
+    if not WINDOWS:
+        for cmd in (["lpstat", "-t"], ["lpstat", "-W", "completed", "-l", "-o"], ["lpoptions", "-p", printer, "-l"],
+                    ["lpoptions", "-p", printer]):
+            try:
+                r = subprocess.run(cmd, capture_output=True, timeout=10)
+                text = (r.stdout + r.stderr).decode(errors="replace")
+            except (OSError, subprocess.SubprocessError) as e:  # CUPS stuck or missing: the rest is still useful
+                text = str(e)
+            out.append(f"$ {' '.join(cmd)}\n{text}")
+    for path in (SETTINGS_FILE, LOG_FILE + ".1", LOG_FILE):
+        try:
+            with open(path, encoding="utf-8", errors="replace") as f:
+                out.append(f"===== {os.path.basename(path)}\n{f.read()}")
+        except OSError as e:
+            out.append(f"===== {os.path.basename(path)}: {e.strerror}")
+    return "\n".join(out)
+
+
 def version_tuple(v):
     return tuple(int(x) for x in v.lstrip("v").split("."))
 
@@ -339,19 +360,39 @@ class App:
         self.dot_text = tk.Label(status, bg=HEADER, fg="#9ca3af", font=(FONT, 8))
         self.dot_text.pack(side="left", padx=(3, 0))
         self.paint_printer_status()
-        for text, command in (("Log", self.show_log), ("Label sizes", self.open_sizes)):
+        for text, command in (("Dump logs", self.dump_logs), ("View logs", self.view_logs),
+                              ("Label sizes", self.open_sizes)):
             link = tk.Label(bar, text=text, bg=HEADER, fg="#9ca3af", font=(FONT, 9, "underline"), cursor="hand2")
             link.pack(side="right", padx=(12, 0))
             link.bind("<Button-1>", lambda e, c=command: c())
             link.bind("<Enter>", lambda e, l=link: l.config(fg="white"))
             link.bind("<Leave>", lambda e, l=link: l.config(fg="#9ca3af"))
 
-    def show_log(self):
-        """Open the log's folder with the file selected, so it can be sent on."""
+    def view_logs(self):
+        """Open log.txt in the computer's text editor."""
         if WINDOWS:
-            subprocess.Popen(["explorer", f"/select,{LOG_FILE}"])
+            os.startfile(LOG_FILE)
         else:
-            subprocess.run(["open", "-R", LOG_FILE])
+            subprocess.run(["open", "-t", LOG_FILE])
+
+    def dump_logs(self):
+        """Save the whole log, settings and printer state as one text file, then show it so it can be sent on."""
+        path = filedialog.asksaveasfilename(title="Save logs", defaultextension=".txt", filetypes=[("Text", "*.txt")],
+                                            initialfile=time.strftime("Fast Printer logs %Y-%m-%d %H%M.txt"))
+        if not path:
+            return
+        try:
+            with open(path, "w", encoding="utf-8") as f:
+                f.write(build_dump(self.printer.get()))
+        except OSError as e:
+            log.exception("Dump logs failed")
+            messagebox.showerror("Couldn't save logs", str(e))
+            return
+        self.set_status(f"Logs saved to {os.path.basename(path)}", OK)
+        if WINDOWS:
+            subprocess.Popen(f'explorer /select,"{os.path.normpath(path)}"')
+        else:
+            subprocess.run(["open", "-R", path])
 
     def printer_picker(self, parent):
         tk.Label(parent, text="SELECT PRINTER", bg=BG, fg=MUTED, font=(FONT, 8, "bold")).pack(anchor="w", pady=(0, 6))
